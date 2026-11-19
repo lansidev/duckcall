@@ -286,6 +286,22 @@ fn install_works_without_call_apps_and_creates_no_stores_for_them() {
 }
 
 #[test]
+fn install_skips_a_discord_store_it_may_not_read() {
+    // macOS can protect another app's data: the store is visible but reading it fails.
+    let sandbox = Sandbox::new("discord-protected");
+    sandbox.handy("option+space").fluxer().discord();
+    fs::set_permissions(sandbox.discord_store(), fs::Permissions::from_mode(0o000)).unwrap();
+
+    let output = sandbox.duckcall(&["install"]);
+
+    fs::set_permissions(sandbox.discord_store(), fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(sandbox.handy_setting("keyboard_implementation"), "tauri");
+    assert_eq!(sandbox.fluxer_mutes(), 1);
+    assert_eq!(sandbox.discord_mutes(), 0);
+}
+
+#[test]
 fn install_leaves_the_call_apps_alone_when_handy_uses_another_shortcut() {
     let sandbox = Sandbox::new("other-shortcut");
     sandbox.handy("ctrl+shift+d").fluxer().discord();

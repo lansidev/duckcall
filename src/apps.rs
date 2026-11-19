@@ -42,7 +42,11 @@ impl App {
         let done = match self {
             App::Handy => Some(handy_done(&handy_read(&store)?)),
             App::Fluxer => fluxer_read(&store)?.map(|state| fluxer_done(&state)),
-            App::Discord => discord_read(&store)?.map(|state| discord_done(&state)),
+            // macOS can protect another app's data: the store is visible but unreadable. Treat it as absent.
+            App::Discord => match discord_read(&store) {
+                Err(error) if error.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied) => None,
+                state => state?.map(|state| discord_done(&state)),
+            },
         };
         Ok(match done {
             None => Setup::Absent,
