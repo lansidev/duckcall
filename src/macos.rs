@@ -1,4 +1,4 @@
-//! Everything macOS-specific. A Linux port provides the same items in `linux.rs`.
+//! Everything macOS-specific. `linux.rs` provides the items `run` needs: `handy_log`, `duck`, `restore`.
 
 use crate::Result;
 use crate::apps::App;
@@ -42,7 +42,7 @@ pub fn handy_log() -> PathBuf {
 
 /// Lowers the output volume to `level` and returns what it was before.
 /// `None` if the output has no volume control (HDMI): there is nothing to restore then.
-pub fn duck_volume(level: u8) -> Option<u8> {
+pub fn duck(level: u8) -> Option<u8> {
     let output = Command::new("osascript")
         .args(["-e", "set v to output volume of (get volume settings)"])
         .args(["-e", &format!("if v is not missing value and v > {level} then set volume output volume {level}")])
@@ -52,8 +52,10 @@ pub fn duck_volume(level: u8) -> Option<u8> {
     String::from_utf8_lossy(&output.stdout).trim().parse().ok()
 }
 
-pub fn set_volume(volume: u8) {
-    let _ = Command::new("osascript").args(["-e", &format!("set volume output volume {volume}")]).status();
+pub fn restore(before: Option<u8>) {
+    if let Some(volume) = before {
+        let _ = Command::new("osascript").args(["-e", &format!("set volume output volume {volume}")]).status();
+    }
 }
 
 // --- apps ----------------------------------------------------------------------------------------

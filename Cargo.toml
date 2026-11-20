@@ -7,6 +7,9 @@ repository = "https://github.com/lansidev/duckcall"
 
 [dependencies]
 libc = "0.2"
+serde_json = "1"
+
+# Only `install` reads and writes the call apps' stores, and it exists on macOS only.
+[target.'cfg(target_os = "macos")'.dependencies]
 rusqlite = { version = "0.43", features = ["bundled"] }
 rusty-leveldb = "4"
-serde_json = "1"

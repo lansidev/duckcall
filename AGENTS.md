@@ -10,14 +10,16 @@ while sitting in a voice call (Fluxer or Discord). While Handy records,
 - the call app mutes the microphone itself, through its "push to mute" shortcut on Handy's key (Option+Space),
 - `duckcall run` lowers the system output volume, so the call stays out of the transcript, and restores it afterwards.
 
-macOS only so far. Linux is planned: keep everything macOS-specific in `src/macos.rs`.
+On macOS that is all of it. On Linux the call apps cannot see Handy's key under Wayland, so `run` mutes the call
+app's microphone stream in PipeWire itself, and there is no `install`. Everything platform-specific lives in
+`src/macos.rs` and `src/linux.rs`; the macOS-only commands are behind `cfg` in `main.rs`.
 
 ## How it works
 
 - **Trigger.** `run` follows Handy's log (`~/Library/Logs/com.pais.handy/handy.log`) and reacts to
   `TranscribeAction::start called`, `TranscribeAction::stop called` and `Operation cancellation completed`.
   These are DEBUG lines, so Handy's `log_level` must be `debug`.
-- **Mute.** duckcall mutes nothing. `install` writes a push-to-mute keybind into the call app's settings store.
+- **Mute (macOS).** duckcall mutes nothing. `install` writes a push-to-mute keybind into the call app's settings store.
 - **Why Handy is switched to `keyboard_implementation = tauri`.** Handy's macOS default, `handy_keys`, runs an
   active event tap and deletes the shortcut's key event. Fluxer only listens and never sees the key. With `tauri`,
   Handy registers a system hotkey and the event stays visible to other listeners.
@@ -31,20 +33,32 @@ macOS only so far. Linux is planned: keep everything macOS-specific in `src/maco
   pins a registration to the exact code and remembers that for the label after `unregister`. Changed code under a
   known label gives a job that never starts: `last exit code = 78: EX_CONFIG`, `job state = spawn failed`. So
   `install` unregisters, rebuilds the app, and registers it under the new label.
+- **Linux.** `run` is the only command. It follows `$XDG_DATA_HOME/com.pais.handy/logs/handy.log` (Tauri's log
+  directory; Handy's `log_level` already defaults to `debug`). On start it mutes every unmuted
+  `Stream/Input/Audio` node of a call app with `wpctl set-mute`, and ducks `@DEFAULT_AUDIO_SINK@`; on stop it
+  unmutes exactly those nodes and restores the volume. A stream belongs to a call app when `vesktop` or `discord`
+  is in the command line of its `application.process.id` or of a parent process: Electron records in a child
+  process that may call itself "Chromium". Matching on Handy instead (mute every other input) would also mute
+  screen-share audio, OBS and Sunshine's capture of the output.
+  Only PulseAudio clients (Chromium and Electron are) carry `application.process.id` on the stream
+  node; a native PipeWire client such as `pw-record` has it on its client object only and is never muted. Check by
+  hand with `parecord` from a parent whose command line says `vesktop`.
+- **The service on Linux** is not duckcall's business: a systemd user service of `graphical-session.target`
+  runs `duckcall run`, written by hand or by the system configuration (NixOS).
 
 ## Code map
 
 | File | Holds |
 |---|---|
-| `src/main.rs` | CLI, `install` / `uninstall`, consent before restarting apps (`apply`, `confirm`) |
-| `src/duck.rs` | `run`: `Tail` (a polling `tail -F`) and `Duck` (remembers the volume from before) |
-| `src/apps.rs` | Reading and writing the settings of Handy, Fluxer and Discord |
+| `src/main.rs` | CLI; on macOS `install` / `uninstall` and consent before restarting apps (`apply`, `confirm`) |
+| `src/duck.rs` | `run`: `Tail` (a polling `tail -F`) and `Duck` (remembers what `platform::duck` changed) |
+| `src/apps.rs` | Reading and writing the settings of Handy, Fluxer and Discord (macOS only) |
 | `src/macos.rs` | Paths, volume (`osascript`), process control, Duckcall.app and its registration; imported as `platform` |
-| `tests/cli.rs` | End-to-end tests: the real binary in a sandbox (`Sandbox`) |
+| `src/linux.rs` | Handy's log path, microphone mute and volume through `pw-dump` and `wpctl`; imported as `platform` |
+| `tests/cli.rs` | macOS end-to-end tests: the real binary in a sandbox (`Sandbox`) |
+| `tests/linux.rs` | Linux end-to-end tests of `run`, with its own `Sandbox` |
 | `assets/logo.svg` | The logo, shown in the README |
 | `assets/duckcall.icns` | The app bundle's icon, compiled into the binary. After changing the logo, run `assets/icns.sh` |
-
-A Linux port adds `src/linux.rs` with the same public items as `macos.rs` and extends the `cfg` in `main.rs`.
 
 ## Rules
 
@@ -59,13 +73,15 @@ A Linux port adds `src/linux.rs` with the same public items as `macos.rs` and ex
   binary in a sandbox: `HOME` and `DUCKCALL_APPLICATIONS` are scratch directories and the only `PATH` entry holds
   stand-ins for `launchctl`, `pgrep`, `pkill`, `open`, `osascript` and `codesign`. The stand-in for `open` is what
   keeps a test from registering a real service. If you copy a real Fluxer or Discord store for an experiment, it
-  contains login tokens: delete it afterwards and keep it out of the repository.
+  contains login tokens: delete it afterwards and keep it out of the repository. `tests/linux.rs` does the same
+  with stand-ins for `pw-dump` and `wpctl`; only the processes behind the streams are real, because duckcall reads
+  their command lines from `/proc`.
 - **Assume the user is in a live call.** Do not play sound, do not restart Handy, Fluxer or Discord, and change
   the real output volume only for a short check that you announce.
 - **Keep the simplifications marked.** Comments starting with `ponytail:` name a deliberate shortcut and its
   upgrade path (system-wide ducking, polling, only `option+space`). Update the comment when you lift one.
-- **Keep dependencies few.** `libc`, `rusqlite` (bundled SQLite), `rusty-leveldb`, `serde_json`; the command line
-  is parsed by hand.
+- **Keep dependencies few.** `libc`, `serde_json`, and on macOS `rusqlite` (bundled SQLite) and `rusty-leveldb`;
+  the command line is parsed by hand.
 
 ## The settings stores
 
@@ -105,7 +121,8 @@ Every change comes with a test for the behaviour it changes.
 | `src/duck.rs` | `DUCK_VOLUME` parsing, the ducking rules (`Duck`), following a log (`Tail`) |
 | `src/apps.rs` | Per app: what counts as set up, what gets written, what is refused and left as it was |
 | `src/macos.rs` | Nothing of its own: the app and its plists are checked through `tests/cli.rs` |
-| `tests/cli.rs` | `install`, `uninstall` and `run` end to end, through the real binary in the sandbox |
+| `tests/cli.rs` | macOS: `install`, `uninstall` and `run` end to end, through the real binary in the sandbox |
+| `tests/linux.rs` | Linux: `run` mutes only call apps' microphones, ducks, and undoes both on stop and on SIGTERM |
 
 - For new end-to-end behaviour, add a fixture or a stand-in to `Sandbox`. A stand-in must never fall through to
   the real tool; that is why the sandbox `PATH` contains nothing else.
@@ -124,7 +141,10 @@ Every change comes with a test for the behaviour it changes.
   `/private/var/db/com.apple.backgroundtaskmanagement/BackgroundItems-v*.btm`. Duckcall must be there as an app
   with the agent in its container, not as a `legacy agent` under `Unknown Developer`.
 - `HANDY_LOG=<file> duckcall run` follows another file; appending the trigger lines to it exercises `run`
-  without Handy. Outside the sandbox this changes the real output volume.
+  without Handy. Outside the sandbox this changes the real output volume, and on Linux mutes the real call.
+- The macOS side builds and lints from Linux: with `rustup target add aarch64-apple-darwin` and `zig`, point
+  `CC_aarch64_apple_darwin` at a script that drops `--target=*` and runs `zig cc -target aarch64-macos`, then
+  `cargo clippy --target aarch64-apple-darwin --all-targets`. Linking and the tests need a Mac.
 
 ## Slack huddles: looked into, not built
 

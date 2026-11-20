@@ -1,22 +1,27 @@
 //! duckcall: mutes you in the call and ducks the output volume while Handy records a dictation.
 //!
-//! The mute is the call app's own "push to mute" on Handy's shortcut; `install` sets that up.
 //! The ducking is `run`, a background service that follows Handy's log.
+//! On macOS the mute is the call app's own "push to mute" on Handy's shortcut; `install` sets that up.
+//! On Linux `run` mutes the call app's microphone stream itself, and the system sets up the service.
 
+#[cfg(target_os = "macos")]
 mod apps;
 mod duck;
-#[cfg(target_os = "macos")]
-#[path = "macos.rs"]
+#[cfg_attr(target_os = "macos", path = "macos.rs")]
+#[cfg_attr(target_os = "linux", path = "linux.rs")]
 mod platform;
-#[cfg(not(target_os = "macos"))]
-compile_error!("duckcall supports only macOS so far");
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+compile_error!("duckcall supports only macOS and Linux");
 
+#[cfg(target_os = "macos")]
 use apps::{App, Setup};
+#[cfg(target_os = "macos")]
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 
+#[cfg(target_os = "macos")]
 const USAGE: &str = "usage: duckcall <command>
   install [--yes]     set up Handy and the call apps, install Duckcall.app and start its background service
   uninstall [--yes]   remove Duckcall.app and its service, restore Handy's keyboard implementation
@@ -28,18 +33,32 @@ const USAGE: &str = "usage: duckcall <command>
 DUCK_VOLUME=10 duckcall install                         ducks to another output volume (default 5, range 0-100)
 DUCKCALL_APPLICATIONS=~/Applications duckcall install   puts the app there instead of /Applications";
 
+#[cfg(target_os = "linux")]
+const USAGE: &str = "usage: duckcall run
+  follow Handy; while it records, mute the call apps' microphones and duck the volume
+
+Run it as a user service of the graphical session; duckcall does not install one on Linux.
+DUCK_VOLUME=10 duckcall run   ducks to another output volume (default 5, range 0-100)";
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let complete = match args.as_slice() {
+        #[cfg(target_os = "macos")]
         ["install"] => install(false),
+        #[cfg(target_os = "macos")]
         ["install", "--yes"] => install(true),
+        #[cfg(target_os = "macos")]
         ["uninstall"] => uninstall(false),
+        #[cfg(target_os = "macos")]
         ["uninstall", "--yes"] => uninstall(true),
         ["run"] => duck::run().map(|()| true),
+        #[cfg(target_os = "macos")]
         ["register"] => platform::app_service(true).map(|()| true),
+        #[cfg(target_os = "macos")]
         ["unregister"] => platform::app_service(false).map(|()| true),
         // Duckcall.app opened like any other app: it switches its background service on.
+        #[cfg(target_os = "macos")]
         [] if platform::in_app() => platform::app_service(true).map(|()| true),
         _ => {
             eprintln!("{USAGE}");
@@ -56,6 +75,7 @@ fn main() -> ExitCode {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn install(yes: bool) -> Result<bool> {
     let level = duck::level()?;
     let shortcut = apps::handy_get("/settings/bindings/transcribe/current_binding")?;
@@ -81,6 +101,7 @@ fn install(yes: bool) -> Result<bool> {
     Ok(complete)
 }
 
+#[cfg(target_os = "macos")]
 fn uninstall(yes: bool) -> Result<bool> {
     platform::service_remove()?;
     println!("Duckcall.app and its background service removed");
@@ -94,6 +115,7 @@ fn uninstall(yes: bool) -> Result<bool> {
 
 /// Applies `change` to each app. Running apps are restarted around it, if the user agrees.
 /// Returns whether every app was changed.
+#[cfg(target_os = "macos")]
 fn apply(apps: &[App], yes: bool, change: impl Fn(App) -> Result<()>) -> Result<bool> {
     let running: Vec<App> = apps.iter().copied().filter(|&app| platform::is_running(app)).collect();
     let restart = running.is_empty() || yes || {
@@ -122,6 +144,7 @@ fn apply(apps: &[App], yes: bool, change: impl Fn(App) -> Result<()>) -> Result<
 }
 
 /// Asks on the terminal; without one the answer is no.
+#[cfg(target_os = "macos")]
 fn confirm(question: &str) -> bool {
     if !io::stdin().is_terminal() {
         return false;

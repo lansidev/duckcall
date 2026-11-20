@@ -9,9 +9,9 @@ Dictate without the call talking over you. While [Handy](https://github.com/cjpa
 - the call app (Fluxer or Discord) mutes your microphone through its own "push to mute" on the same key,
 - duckcall lowers the system volume to 5 and restores it afterwards.
 
-macOS only so far; Linux is planned.
+That is macOS. On Linux duckcall mutes the call itself, without any setup in the call app: see [Linux](#linux).
 
-## Installation
+## Installation on macOS
 
 ```sh
 git clone https://github.com/lansidev/duckcall
@@ -63,6 +63,53 @@ After updating duckcall, run `duckcall install` again: Duckcall.app carries its 
 - If Handy changes the wording of its log lines (`TranscribeAction::start called` / `stop called`),
   the ducking stops working.
 - Slack huddles are not supported: Slack has no push to mute and no custom shortcuts, only a mute toggle on ⌘⇧Space.
+
+## Linux
+
+While Handy records,
+
+- duckcall mutes the microphone streams of Vesktop and Discord in PipeWire. The call receives silence,
+  Handy's own recording stays live.
+- duckcall lowers the default output to 5 and restores both afterwards.
+
+Neither the call app nor Handy needs any setup, so there is no `install`: `duckcall run` is the whole
+program. Run it as a user service of the graphical session, for example
+`~/.config/systemd/user/duckcall.service`:
+
+```ini
+[Unit]
+Description=duckcall: mute the call while Handy records
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/duckcall run
+Environment=DUCK_VOLUME=5
+Restart=on-failure
+
+[Install]
+WantedBy=graphical-session.target
+```
+
+```sh
+cargo install --path duckcall --root ~/.local
+systemctl --user enable --now duckcall
+```
+
+Requirements:
+
+- PipeWire, with `pw-dump` and WirePlumber's `wpctl` on the service's `PATH`.
+- Handy's log level at `debug`, its default. duckcall follows `~/.local/share/com.pais.handy/logs/handy.log`.
+- On Wayland, Handy's own shortcut only works while an X11 window has the focus. Bind
+  `handy --toggle-transcription` in the compositor instead (Handy's README shows how per desktop).
+
+Limits:
+
+- A call app is recognized by `vesktop` or `discord` in its command line or in one of its parent
+  processes' (Electron records in a child process). Other call apps keep their microphone.
+- A microphone stream the call app opens during a dictation stays live.
+- The call app does not show the mute; it only receives silence.
+- The whole default output is ducked, as on macOS.
 
 ## Development
 
