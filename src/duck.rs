@@ -26,45 +26,44 @@ extern "C" fn stop(_signal: libc::c_int) {
 
 pub fn run() -> Result<()> {
     let level = level()?;
-    // The service may be stopped in the middle of a dictation; the volume must not stay ducked.
+    // The service may be stopped in the middle of a dictation; nothing may stay ducked or muted.
     unsafe {
         let handler = stop as *const () as libc::sighandler_t;
         libc::signal(libc::SIGTERM, handler);
         libc::signal(libc::SIGINT, handler);
     }
-    let mut duck = Duck::default();
+    let mut duck = Duck { before: None };
     let mut tail = Tail::new(platform::handy_log());
     while !STOP.load(Ordering::Relaxed) {
         match tail.next() {
-            Some(line) => duck.line(&line, || platform::duck_volume(level), platform::set_volume),
+            Some(line) => duck.line(&line, || platform::duck(level), platform::restore),
             // ponytail: polls; kqueue/inotify if 20 wakeups a second ever matter.
             None => std::thread::sleep(Duration::from_millis(50)),
         }
     }
-    if let Some(volume) = duck.before {
-        platform::set_volume(volume);
+    if let Some(before) = duck.before {
+        platform::restore(before);
     }
     Ok(())
 }
 
-/// Holds the volume from before ducking, so repeated starts and stops change nothing.
-#[derive(Default)]
-struct Duck {
-    before: Option<u8>,
+/// Holds what ducking changed (`platform::duck`), so repeated starts and stops change nothing.
+struct Duck<T> {
+    before: Option<T>,
 }
 
-impl Duck {
+impl<T> Duck<T> {
     // Handy's own log is the trigger, so every Handy shortcut and activation mode is covered.
-    // These are DEBUG lines: Handy's log_level must stay "debug" (install sets it).
-    fn line(&mut self, line: &str, duck: impl FnOnce() -> Option<u8>, restore: impl FnOnce(u8)) {
+    // These are DEBUG lines: Handy's log_level must stay "debug" (its default; on macOS install sets it).
+    fn line(&mut self, line: &str, duck: impl FnOnce() -> T, restore: impl FnOnce(T)) {
         if line.contains("TranscribeAction::start called") {
             if self.before.is_none() {
-                self.before = duck();
+                self.before = Some(duck());
             }
         } else if (line.contains("TranscribeAction::stop called") || line.contains("Operation cancellation completed"))
-            && let Some(volume) = self.before.take()
+            && let Some(before) = self.before.take()
         {
-            restore(volume);
+            restore(before);
         }
     }
 }
@@ -131,9 +130,10 @@ mod tests {
     }
 
     /// Feeds log lines to a `Duck` whose output reports the given volume; returns the volume changes it made.
-    fn changes(lines: &[(&str, Option<u8>)]) -> Vec<String> {
+    /// What restoring means for an output without a volume control is up to `platform::restore`.
+    fn changes(lines: &[(&str, u8)]) -> Vec<String> {
         let calls = RefCell::new(Vec::new());
-        let mut duck = Duck::default();
+        let mut duck = Duck { before: None };
         for &(line, volume) in lines {
             duck.line(
                 line,
@@ -150,30 +150,25 @@ mod tests {
     #[test]
     fn ducks_once_and_restores_the_volume_from_before() {
         let calls = changes(&[
-            (STARTED, Some(50)),
-            (STARTED, Some(5)), // must not take the ducked volume as "before"
-            (STOPPED, None),
-            (STOPPED, None),
+            (STARTED, 50),
+            (STARTED, 5), // must not take the ducked volume as "before"
+            (STOPPED, 0),
+            (STOPPED, 0),
         ]);
         assert_eq!(calls, ["duck", "restore 50"]);
     }
 
     #[test]
     fn a_cancelled_recording_restores_the_volume_too() {
-        assert_eq!(changes(&[(STARTED, Some(30)), (CANCELLED, None)]), ["duck", "restore 30"]);
-    }
-
-    #[test]
-    fn an_output_without_volume_control_is_never_restored() {
-        assert_eq!(changes(&[(STARTED, None), (STOPPED, None)]), ["duck"]);
+        assert_eq!(changes(&[(STARTED, 30), (CANCELLED, 0)]), ["duck", "restore 30"]);
     }
 
     #[test]
     fn a_stop_without_a_start_and_other_lines_change_nothing() {
         let calls = changes(&[
-            (STOPPED, Some(50)),
-            (CANCELLED, Some(50)),
-            ("[handy_app_lib::tray][DEBUG] tray apply: icon=resources/tray_recording_dark.png", Some(50)),
+            (STOPPED, 50),
+            (CANCELLED, 50),
+            ("[handy_app_lib::tray][DEBUG] tray apply: icon=resources/tray_recording_dark.png", 50),
         ]);
         assert!(calls.is_empty(), "{calls:?}");
     }

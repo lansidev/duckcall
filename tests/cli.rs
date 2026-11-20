@@ -1,6 +1,7 @@
 //! Runs the real binary in a sandbox. `HOME` points at a scratch directory with fixture stores,
 //! and the only `PATH` entry holds stand-ins for launchctl, pgrep, pkill, open, osascript and codesign,
 //! so nothing here touches the real apps, the real service or the real volume.
+#![cfg(target_os = "macos")]
 
 use rusqlite::Connection;
 use serde_json::{Value, json};
