@@ -33,10 +33,20 @@ impl Sandbox {
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         };
         // Like the real wpctl, get-volume fails without a default output.
-        stand_in("wpctl", &format!("{note}\n[ \"$1\" != get-volume ] && exit\nread -r volume < \"$SANDBOX/volume\" && echo \"Volume: $volume\""));
+        stand_in(
+            "wpctl",
+            &format!(
+                r#"{note}
+case "$1 $#" in
+  "get-volume 2") read -r volume < "$SANDBOX/volume" && echo "Volume: $volume" ;;
+  "settings 2") read -r memory < "$SANDBOX/memory" && echo "Value: $memory" ;;
+esac"#
+            ),
+        );
         stand_in("pw-dump", r#"read -r graph < "$SANDBOX/graph.json"; printf '%s\n' "$graph""#);
         let sandbox = Sandbox { root, apps: Vec::new() };
         sandbox.volume(Some("0.40"));
+        sandbox.memory(true);
         sandbox
     }
 
@@ -47,6 +57,11 @@ impl Sandbox {
             Some(volume) => fs::write(file, format!("{volume}\n")).unwrap(),
             None => fs::remove_file(file).unwrap(),
         }
+    }
+
+    /// What the stand-in for wpctl reports for WirePlumber's stream memory (`node.stream.restore-props`).
+    fn memory(&self, on: bool) {
+        fs::write(self.root.join("memory"), format!("{on}\n")).unwrap();
     }
 
     /// What the stand-in for pw-dump reports.
@@ -72,10 +87,15 @@ impl Sandbox {
         pids
     }
 
-    /// The changes the stand-in for wpctl was asked for, in order.
+    /// The changes the stand-in for wpctl was asked for, in order; reads are left out.
     fn changes(&self) -> Vec<String> {
         let calls = fs::read_to_string(self.root.join("calls")).unwrap_or_default();
-        calls.lines().filter_map(|call| call.strip_prefix("wpctl set-")).map(String::from).collect()
+        calls
+            .lines()
+            .filter_map(|call| call.strip_prefix("wpctl "))
+            .filter(|call| !call.starts_with("get-") && *call != "settings node.stream.restore-props")
+            .map(|call| call.strip_prefix("set-").unwrap_or(call).to_string())
+            .collect()
     }
 }
 
@@ -167,25 +187,27 @@ fn run_mutes_only_the_call_apps_microphones_and_ducks_until_handy_stops_and_on_s
     // A repeated line changes nothing, so each one is written until the service has reacted.
     until("the call to be muted", || {
         handy_logs(STARTED);
-        sandbox.changes().len() == 3
+        sandbox.changes().len() == 4
     });
     until("the call to be unmuted", || {
         handy_logs(STOPPED);
-        sandbox.changes().len() == 6
+        sandbox.changes().len() == 8
     });
     until("the call to be muted again", || {
         handy_logs(STARTED);
-        sandbox.changes().len() == 9
+        sandbox.changes().len() == 12
     });
     let status = service.stop();
 
     assert!(status.success(), "{status}");
     let once = [
+        "settings node.stream.restore-props false", // or WirePlumber mutes the call app's next microphones too
         "mute 50 1",
         "mute 54 1",
         "volume @DEFAULT_AUDIO_SINK@ 0.07",
         "mute 50 0",
         "mute 54 0",
+        "settings node.stream.restore-props true",
         "volume @DEFAULT_AUDIO_SINK@ 0.4",
     ];
     assert_eq!(sandbox.changes(), [once, once].concat());
@@ -201,15 +223,42 @@ fn run_unmutes_the_call_also_without_a_default_output() {
 
     until("the call to be muted", || {
         handy_logs(STARTED);
-        sandbox.changes().len() == 1
+        sandbox.changes().len() == 2
     });
     until("the call to be unmuted", || {
         handy_logs(STOPPED);
-        sandbox.changes().len() == 2
+        sandbox.changes().len() == 4
     });
     service.stop();
 
-    assert_eq!(sandbox.changes(), ["mute 60 1", "mute 60 0"]);
+    assert_eq!(
+        sandbox.changes(),
+        ["settings node.stream.restore-props false", "mute 60 1", "mute 60 0", "settings node.stream.restore-props true"]
+    );
+}
+
+#[test]
+fn run_leaves_wireplumbers_stream_memory_off_if_the_user_switched_it_off() {
+    let mut sandbox = Sandbox::new("run-memory-off");
+    let (_, vesktop_audio) = sandbox.app("vesktop");
+    sandbox.graph(&[node(70, "Stream/Input/Audio", vesktop_audio, false)]);
+    sandbox.memory(false);
+    let (service, handy_logs) = Service::start(&sandbox, "5");
+
+    until("the call to be muted", || {
+        handy_logs(STARTED);
+        sandbox.changes().len() == 2
+    });
+    until("the call to be unmuted", || {
+        handy_logs(STOPPED);
+        sandbox.changes().len() == 4
+    });
+    service.stop();
+
+    assert_eq!(
+        sandbox.changes(),
+        ["mute 70 1", "volume @DEFAULT_AUDIO_SINK@ 0.05", "mute 70 0", "volume @DEFAULT_AUDIO_SINK@ 0.4"]
+    );
 }
 
 #[test]

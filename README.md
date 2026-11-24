@@ -71,6 +71,8 @@ While Handy records,
 - duckcall mutes the microphone streams of Vesktop and Discord in PipeWire. The call receives silence,
   Handy's own recording stays live.
 - duckcall lowers the default output to 5 and restores both afterwards.
+- WirePlumber's memory of stream volumes and mutes (`node.stream.restore-props`) is off meanwhile. It would
+  otherwise mute the call app's next microphones as well when a dictation is cut off before the restore.
 
 Neither the call app nor Handy needs any setup, so there is no `install`: `duckcall run` is the whole
 program. Run it as a user service of the graphical session, for example
@@ -80,7 +82,7 @@ program. Run it as a user service of the graphical session, for example
 [Unit]
 Description=duckcall: mute the call while Handy records
 PartOf=graphical-session.target
-After=graphical-session.target
+After=graphical-session.target pipewire.service wireplumber.service
 
 [Service]
 ExecStart=%h/.local/bin/duckcall run

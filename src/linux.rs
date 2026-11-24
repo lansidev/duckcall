@@ -13,6 +13,9 @@ const CALL_APPS: [&str; 2] = ["vesktop", "discord"];
 
 const OUTPUT: &str = "@DEFAULT_AUDIO_SINK@";
 
+/// WirePlumber's memory of stream volumes and mutes: it saves them per app and applies them to the app's next stream.
+const STREAM_MEMORY: &str = "node.stream.restore-props";
+
 pub fn handy_log() -> PathBuf {
     if let Some(log) = std::env::var_os("HANDY_LOG") {
         return log.into();
@@ -29,6 +32,8 @@ pub struct Ducked {
     volume: Option<f64>,
     /// The call microphones duck muted. One the user had muted already is not in here and stays muted.
     muted: Vec<u64>,
+    /// Whether duck switched WirePlumber's stream memory off. If the user had switched it off, it stays off.
+    memory_off: bool,
 }
 
 /// Mutes the call apps' microphones and lowers the output volume to `level`.
@@ -36,6 +41,13 @@ pub struct Ducked {
 // graph with `pw-mon` if that ever matters.
 pub fn duck(level: u8) -> Ducked {
     let muted = call_microphones();
+    // A remembered mute would outlive a restore that never comes (the call app closed during the dictation,
+    // duckcall killed at shutdown): every later microphone of the call app would start muted, and
+    // `call_microphones` takes a muted one for the user's. Without `--save`, so a WirePlumber restart
+    // switches the memory back on.
+    let memory_off = !muted.is_empty()
+        && wpctl(&["settings", STREAM_MEMORY]).is_some_and(|answer| answer.trim() == "Value: true")
+        && wpctl(&["settings", STREAM_MEMORY, "false"]).is_some();
     for id in &muted {
         wpctl(&["set-mute", &id.to_string(), "1"]);
     }
@@ -46,12 +58,15 @@ pub fn duck(level: u8) -> Ducked {
     if volume.is_some_and(|volume| volume > level) {
         wpctl(&["set-volume", OUTPUT, &level.to_string()]);
     }
-    Ducked { volume, muted }
+    Ducked { volume, muted, memory_off }
 }
 
 pub fn restore(ducked: Ducked) {
     for id in ducked.muted {
         wpctl(&["set-mute", &id.to_string(), "0"]);
+    }
+    if ducked.memory_off {
+        wpctl(&["settings", STREAM_MEMORY, "true"]);
     }
     if let Some(volume) = ducked.volume {
         wpctl(&["set-volume", OUTPUT, &volume.to_string()]);
