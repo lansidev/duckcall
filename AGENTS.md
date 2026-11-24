@@ -36,7 +36,11 @@ app's microphone stream in PipeWire itself, and there is no `install`. Everythin
 - **Linux.** `run` is the only command. It follows `$XDG_DATA_HOME/com.pais.handy/logs/handy.log` (Tauri's log
   directory; Handy's `log_level` already defaults to `debug`). On start it mutes every unmuted
   `Stream/Input/Audio` node of a call app with `wpctl set-mute`, and ducks `@DEFAULT_AUDIO_SINK@`; on stop it
-  unmutes exactly those nodes and restores the volume. A stream belongs to a call app when `vesktop` or `discord`
+  unmutes exactly those nodes and restores the volume. While it holds a mute, WirePlumber's stream memory
+  (`node.stream.restore-props`) is off (`wpctl settings`, not saved), unless the user had switched it off: WirePlumber
+  stores a stream's mute per app and applies it to the app's next stream, so a mute that was never undone (the call
+  app closed during the dictation, duckcall killed) would mute every later call.
+  A stream belongs to a call app when `vesktop` or `discord`
   is in the command line of its `application.process.id` or of a parent process: Electron records in a child
   process that may call itself "Chromium". Matching on Handy instead (mute every other input) would also mute
   screen-share audio, OBS and Sunshine's capture of the output.
@@ -122,7 +126,7 @@ Every change comes with a test for the behaviour it changes.
 | `src/apps.rs` | Per app: what counts as set up, what gets written, what is refused and left as it was |
 | `src/macos.rs` | Nothing of its own: the app and its plists are checked through `tests/cli.rs` |
 | `tests/cli.rs` | macOS: `install`, `uninstall` and `run` end to end, through the real binary in the sandbox |
-| `tests/linux.rs` | Linux: `run` mutes only call apps' microphones, ducks, and undoes both on stop and on SIGTERM |
+| `tests/linux.rs` | Linux: `run` mutes only call apps' microphones, ducks, undoes both on stop and on SIGTERM, and keeps WirePlumber's stream memory off meanwhile |
 
 - For new end-to-end behaviour, add a fixture or a stand-in to `Sandbox`. A stand-in must never fall through to
   the real tool; that is why the sandbox `PATH` contains nothing else.
